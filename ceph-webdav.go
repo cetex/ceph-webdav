@@ -12,6 +12,7 @@ import (
 type Ceph struct {
 	conn  *rados.Conn
 	ioctx *rados.IOContext
+	mdctx *rados.IOContext
 }
 
 func (c *Ceph) connect(pool string) error {
@@ -29,6 +30,7 @@ func (c *Ceph) connect(pool string) error {
 	}
 	log.Println("Connecting to ceph")
 	if err := c.conn.Connect(); err != nil {
+		log.Println("FAIL!")
 		log.Println(err)
 		return err
 	}
@@ -38,6 +40,13 @@ func (c *Ceph) connect(pool string) error {
 		return err
 	} else {
 		c.ioctx = ioctx
+	}
+	log.Println("Creating IO context for pool: ", pool+"_metadata")
+	if ioctx, err := c.conn.OpenIOContext(pool + "_metadata"); err != nil {
+		log.Println(err)
+		return err
+	} else {
+		c.mdctx = ioctx
 	}
 	log.Println("Initialized")
 	return nil
@@ -50,10 +59,9 @@ func (c *Ceph) Mkdir(name string, perm os.FileMode) error {
 
 func (c *Ceph) createFD(name string) *cephFile {
 	return &cephFile{
-		oid:   name,
-		pos:   0,
-		ioctx: c.ioctx,
-		ceph:  c,
+		oid:  name,
+		pos:  0,
+		ceph: c,
 	}
 }
 
@@ -112,6 +120,7 @@ func main() {
 		log.Println(err)
 	}
 	srv := &webdav.Handler{
+		Prefix:     "/",
 		FileSystem: c,
 		LockSystem: webdav.NewMemLS(),
 		Logger: func(r *http.Request, err error) {

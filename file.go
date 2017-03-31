@@ -10,23 +10,22 @@ import (
 )
 
 type cephFile struct {
-	oid   string
-	pos   uint64
-	ioctx *rados.IOContext
-	ceph  *Ceph
+	oid  string
+	pos  uint64
+	ceph *Ceph
 }
 
 func (f *cephFile) Close() error {
 	log.Println("Close: ", f.oid)
 	f.oid = ""
 	f.pos = 0
-	f.ioctx = nil
+	f.ceph = nil
 	return nil
 }
 
 func (f *cephFile) Read(p []byte) (int, error) {
 	log.Println("Read: ", f.oid)
-	read, err := f.ioctx.Read(f.oid, p, f.pos)
+	read, err := f.ceph.ioctx.Read(f.oid, p, f.pos)
 	f.pos += uint64(read)
 	return read, err
 }
@@ -50,7 +49,7 @@ func (f *cephFile) Seek(offset int64, whence int) (int64, error) {
 
 func (f *cephFile) Write(p []byte) (int, error) {
 	log.Println("Write: ", f.oid)
-	err := f.ioctx.Write(f.oid, p, f.pos)
+	err := f.ceph.ioctx.Write(f.oid, p, f.pos)
 	if err != nil {
 		// If error, assume nothing was written. Ceph should be fully
 		// consistent and if write fails without info on how much was
@@ -63,10 +62,15 @@ func (f *cephFile) Write(p []byte) (int, error) {
 
 func (f *cephFile) Readdir(count int) ([]os.FileInfo, error) {
 	log.Println("Readdir: ", f.oid)
-	if f.oid == "/" {
+	if f.oid == "" {
 		// Is root directory, create file listing.
 		dirList := []os.FileInfo{}
-		iter, err := f.ioctx.Iter()
+		if root, err := f.rootStat(); err != nil {
+			return nil, err
+		} else {
+			dirList = append(dirList, root)
+		}
+		iter, err := f.ceph.ioctx.Iter()
 		if err != nil {
 			return nil, err
 		}
@@ -84,25 +88,29 @@ func (f *cephFile) Readdir(count int) ([]os.FileInfo, error) {
 	return nil, fmt.Errorf("Not a directory!")
 }
 
+func (f *cephFile) rootStat() (*cephStat, error) {
+	stat, err := f.ceph.ioctx.GetPoolStats()
+	if err != nil {
+		log.Println(err)
+		return nil, err
+	}
+	return &cephStat{
+		name:    "",
+		size:    int64(stat.Num_bytes),
+		mode:    os.FileMode(755) + 1<<(32-1),
+		modTime: time.Now(),
+		isDir:   true,
+		sys:     nil,
+	}, nil
+}
+
 func (f *cephFile) Stat() (os.FileInfo, error) {
 	log.Println("Stat: ", f.oid)
-	if f.oid == "/" {
+	if f.oid == "" {
 		// Stat on root directory, make up a directory..
-		stat, err := f.ioctx.GetPoolStats()
-		if err != nil {
-			log.Println(err)
-			return nil, err
-		}
-		return &cephStat{
-			name:    "/",
-			size:    int64(stat.Num_bytes),
-			mode:    os.FileMode(755) + 1<<(32-1),
-			modTime: time.Now(),
-			isDir:   true,
-			sys:     nil,
-		}, nil
+		return f.rootStat()
 	}
-	stat, err := f.ioctx.Stat(f.oid)
+	stat, err := f.ceph.ioctx.Stat(f.oid)
 	if err != nil {
 		log.Println(err)
 		spew.Dump(err)
@@ -154,7 +162,7 @@ func (s *cephStat) ModTime() time.Time {
 }
 
 func (s *cephStat) IsDir() bool {
-	log.Printf("IsDir: ", s.IsDir)
+	log.Printf("IsDir: ", s.isDir)
 	return s.isDir
 }
 
